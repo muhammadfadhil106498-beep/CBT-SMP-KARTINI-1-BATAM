@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Ujian Digital SMP Kartini 1 Batam",
+  "description": "Portal ujian berbasis komputer (CBT) SMP Kartini 1 Batam dengan akses terpisah untuk Siswa, Guru, dan Admin serta asisten penalaran soal berbasis AI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
