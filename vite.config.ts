@@ -26,6 +26,20 @@ export default defineConfig(() => {
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
           }
+          if (fs.existsSync(distDir)) {
+            // Ensure GitHub Pages skips Jekyll processing
+            fs.writeFileSync(path.resolve(distDir, '.nojekyll'), '');
+            // Ensure SPA fallback on GitHub Pages & custom domains
+            const indexHtml = path.resolve(distDir, 'index.html');
+            if (fs.existsSync(indexHtml)) {
+              fs.copyFileSync(indexHtml, path.resolve(distDir, '404.html'));
+            }
+            // Copy root CNAME if provided for custom domain
+            const rootCname = path.resolve(__dirname, 'CNAME');
+            if (fs.existsSync(rootCname)) {
+              fs.copyFileSync(rootCname, path.resolve(distDir, 'CNAME'));
+            }
+          }
         },
       },
     ],

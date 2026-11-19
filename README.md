@@ -111,12 +111,24 @@ npm run build
 
 ## Deployment Langsung dari GitHub
 
-### Opsi A: GitHub Pages (Gratis & Langsung Uji dari GitHub)
-Repositori ini sudah menyertakan `.github/workflows/pages.yml` dan konfigurasi `base: './'` di `vite.config.ts`.
-1. Push repositori ke GitHub (branch `main`).
+### Opsi A: GitHub Pages (Build and deployment Source: GitHub Actions)
+Repositori ini sudah dikonfigurasi penuh untuk GitHub Pages melalui `.github/workflows/pages.yml`, `.npmrc`, `vite.config.ts` (`base: './'`, `.nojekyll`, dan `404.html` fallback):
+1. Push seluruh repositori ke GitHub (branch `main` atau `master`).
 2. Buka **Settings → Pages** di repositori GitHub Anda.
 3. Pada bagian **Build and deployment → Source**, pilih **GitHub Actions**.
-4. Setiap push ke `main` akan otomatis menjalankan `npm run lint`, `npm test`, `npm run build`, dan men-deploy folder `dist/` ke GitHub Pages.
+4. Workflow **Deploy to GitHub Pages** akan berjalan otomatis setiap kali ada push ke `main`/`master` (atau bisa dijalankan manual lewat tab **Actions → Deploy to GitHub Pages → Run workflow**).
+
+### Menggunakan Custom Domain di GitHub Pages
+Aplikasi mendukung **Custom Domain** (misalnya `ujian.smpkartini1batam.sch.id`) dengan path aset relatif (`base: './'`) sehingga gambar, skrip, dan routing tetap berjalan baik di subdomain maupun root domain.
+
+1. **Atur DNS di penyedia domain Anda** (Cloudflare / Niagahoster / Rumahweb / Namecheap):
+   - Jika menggunakan **subdomain** (contoh `ujian.smpkartini1batam.sch.id`):
+     - Tipe: `CNAME` · Name: `ujian` · Target: `<username-github>.github.io`
+   - Jika menggunakan **root/apex domain** (contoh `smpkartini1batam.sch.id`):
+     - Tambahkan 4 record `A` ke IP resmi GitHub Pages: `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`
+2. **Daftarkan domain di GitHub**:
+   - Buka **Settings → Pages → Custom domain**, masukkan domain Anda (misal `ujian.smpkartini1batam.sch.id`), klik **Save**, lalu centang **Enforce HTTPS** setelah verifikasi DNS selesai.
+   - *(Opsional agar CNAME selalu ikut di setiap build Actions)*: Tambahkan repository variable `CUSTOM_DOMAIN` di **Settings → Secrets and variables → Actions → Variables** (atau buat file `public/CNAME` berisi nama domain Anda).
 
 ### Opsi B: Server Node.js (VPS / Railway / Render / Cloud Run)
 ```bash
