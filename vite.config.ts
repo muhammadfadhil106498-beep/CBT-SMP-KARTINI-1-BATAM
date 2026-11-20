@@ -8,7 +8,7 @@ const rootDir = import.meta.dirname;
 
 export default defineConfig(() => {
   return {
-    base: './',
+    base: '/CBT-SMP-KARTINI-1-BATAM/',
     plugins: [
       react(),
       tailwindcss(),
