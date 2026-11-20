@@ -3,13 +3,13 @@ import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
-
+import react from '@vitejs/plugin-react';
 const rootDir = import.meta.dirname;
 
 export default defineConfig(() => {
   return {
     base: '/CBT-SMP-KARTINI-1-BATAM/',
-    plugins: [
+    plugins: [react()],
       react(),
       tailwindcss(),
       // Copies src/assets into dist/ so root-relative URLs like
