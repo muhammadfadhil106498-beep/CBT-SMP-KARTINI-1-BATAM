@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AdminPortal } from './components/AdminPortal';
+import { ChangePasswordModal } from './components/ChangePasswordModal';
 import { ExamRunner } from './components/ExamRunner';
 import { LoginView } from './components/LoginView';
+import { StudentIdentityGate } from './components/StudentIdentityGate';
 import { StudentPortal } from './components/StudentPortal';
 import { TeacherPortal } from './components/TeacherPortal';
 import { TopBar } from './components/TopBar';
@@ -27,6 +29,7 @@ import {
   canAccessTab,
   getDefaultTabForRole,
   gradeSubmission,
+  isTeacherSubjectMatch,
   PortalTab,
 } from './utils/examEngine';
 
@@ -42,8 +45,11 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(() =>
     getSavedSessionUserId()
   );
+  const [guestStudent, setGuestStudent] = useState<User | null>(null);
+  const [pendingStudentExam, setPendingStudentExam] = useState<Exam | null>(null);
   const [activeTab, setActiveTab] = useState<PortalTab>('siswa-ujian');
   const [activeExamId, setActiveExamId] = useState<string | null>(null);
+  const [showChangePasswordModal, setShowChangePasswordModal] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -69,13 +75,15 @@ export default function App() {
     };
   }, []);
 
-  const currentUser = useMemo(
-    () =>
-      currentUserId
-        ? database.users.find((u) => u.id === currentUserId && u.active) ?? null
-        : null,
-    [database.users, currentUserId]
-  );
+  const currentUser = useMemo(() => {
+    if (!currentUserId) return null;
+    const registered = database.users.find(
+      (u) => u.id === currentUserId && u.active
+    );
+    if (registered) return registered;
+    if (guestStudent && guestStudent.id === currentUserId) return guestStudent;
+    return null;
+  }, [database.users, currentUserId, guestStudent]);
 
   const commitDatabase = (
     updater: (prev: AppDatabase) => AppDatabase,
@@ -97,6 +105,7 @@ export default function App() {
   };
 
   const handleLoginSuccess = (user: User) => {
+    setGuestStudent(null);
     setCurrentUserId(user.id);
     saveSessionUserId(user.id);
     setActiveTab(getDefaultTabForRole(user.role));
@@ -109,6 +118,112 @@ export default function App() {
     });
   };
 
+  const handleStudentExamEnter = (exam: Exam, student: User) => {
+    const normNumber = student.username.trim().toLowerCase();
+    const normName = student.name.trim().toLowerCase().replace(/\s+/g, ' ');
+    const completedDuplicate = database.submissions.find(
+      (s) =>
+        s.examId === exam.id &&
+        s.status === 'selesai' &&
+        (s.studentNis.trim().toLowerCase() === normNumber ||
+          s.studentName.trim().toLowerCase().replace(/\s+/g, ' ') === normName)
+    );
+    if (completedDuplicate) {
+      setActiveExamId(null);
+      setActiveTab('siswa-nilai');
+      return;
+    }
+
+    const isRegistered = database.users.some((u) => u.id === student.id);
+    if (isRegistered) {
+      setGuestStudent(null);
+      saveSessionUserId(student.id);
+    } else {
+      setGuestStudent(student);
+      saveSessionUserId(null);
+    }
+    setCurrentUserId(student.id);
+    setActiveTab('siswa-ujian');
+
+    const existing = database.submissions.find(
+      (s) =>
+        s.examId === exam.id &&
+        (s.studentId === student.id ||
+          s.studentNis.trim().toLowerCase() === normNumber)
+    );
+    if (existing && existing.status === 'selesai') {
+      setActiveExamId(null);
+      setActiveTab('siswa-nilai');
+      return;
+    }
+
+    if (!existing) {
+      const freshSub: ExamSubmission = {
+        id: `sub-${Date.now()}`,
+        examId: exam.id,
+        studentId: student.id,
+        studentName: student.name,
+        studentNis: student.username,
+        studentClass: student.kelas,
+        answers: {},
+        flaggedIds: [],
+        essayScores: {},
+        essayFeedback: {},
+        autoScore: 0,
+        essayScoreTotal: 0,
+        finalScore: 0,
+        status: 'sedang_mengerjakan',
+        tabSwitches: 0,
+        startedAt: new Date().toISOString(),
+        remainingSeconds: exam.durationMinutes * 60,
+      };
+      commitDatabase(
+        (prev) => ({
+          ...prev,
+          submissions: [...prev.submissions, freshSub],
+        }),
+        {
+          actorName: student.name,
+          actorRole: 'siswa',
+          action: 'Masuk Kode Ujian',
+          detail: `Memasuki ${exam.title} dengan kode ${exam.token} (${student.kelas} · No. ${student.username})`,
+          examId: exam.id,
+          examTitle: exam.title,
+          studentNis: student.username,
+          studentClass: student.kelas,
+        }
+      );
+    } else {
+      commitDatabase(
+        (prev) => ({
+          ...prev,
+          submissions: prev.submissions.map((s) =>
+            s.id === existing.id
+              ? {
+                  ...s,
+                  studentId: student.id,
+                  studentName: student.name,
+                  studentNis: student.username,
+                  studentClass: student.kelas,
+                }
+              : s
+          ),
+        }),
+        {
+          actorName: student.name,
+          actorRole: 'siswa',
+          action: 'Masuk Kode Ujian',
+          detail: `Melanjutkan sesi ${exam.title} (${student.kelas} · No. ${student.username})`,
+          examId: exam.id,
+          examTitle: exam.title,
+          studentNis: student.username,
+          studentClass: student.kelas,
+        }
+      );
+    }
+    setActiveExamId(exam.id);
+  };
+
   const handleLogout = () => {
     if (currentUser) {
       commitDatabase((prev) => prev, {
@@ -119,6 +234,8 @@ export default function App() {
       });
     }
     setCurrentUserId(null);
+    setGuestStudent(null);
+    setPendingStudentExam(null);
     setActiveExamId(null);
     saveSessionUserId(null);
   };
@@ -127,6 +244,21 @@ export default function App() {
     if (!currentUser) return;
     if (!canAccessTab(currentUser.role, tab)) return;
     setActiveTab(tab);
+  };
+
+  const handleChangePassword = (updatedUser: User, updatedUsers: User[]) => {
+    commitDatabase(
+      (prev) => ({
+        ...prev,
+        users: updatedUsers,
+      }),
+      {
+        actorName: updatedUser.name,
+        actorRole: updatedUser.role,
+        action: 'Ganti Password',
+        detail: `Pengguna ${updatedUser.username} memperbarui kata sandi`,
+      }
+    );
   };
 
   // Student Exam Flow
@@ -166,6 +298,10 @@ export default function App() {
           actorRole: 'siswa',
           action: 'Mulai Ujian',
           detail: `Memulai ${exam.title} (Kelas ${currentUser.kelas})`,
+          examId: exam.id,
+          examTitle: exam.title,
+          studentNis: currentUser.username,
+          studentClass: currentUser.kelas,
         }
       );
     }
@@ -176,12 +312,19 @@ export default function App() {
     commitDatabase((prev) => ({
       ...prev,
       submissions: prev.submissions.map((s) =>
-        s.id === updatedSub.id ? updatedSub : s
+        s.id === updatedSub.id && s.status !== 'selesai' ? updatedSub : s
       ),
     }));
   };
 
   const handleFinalSubmitExam = (finalizedSub: ExamSubmission) => {
+    const existingSub = database.submissions.find((s) => s.id === finalizedSub.id);
+    if (existingSub?.status === 'selesai') {
+      setActiveExamId(null);
+      setActiveTab('siswa-nilai');
+      return;
+    }
+
     const exam = database.exams.find((e) => e.id === finalizedSub.examId);
     if (!exam) return;
     const examQuestions = database.questions.filter((q) =>
@@ -210,8 +353,14 @@ export default function App() {
       {
         actorName: completed.studentName,
         actorRole: 'siswa',
-        action: 'Kumpul Ujian',
-        detail: `Mengumpulkan ${exam.title} (Nilai Sementara/PG: ${calc.finalScore})`,
+        action: completed.autoSubmittedReason ? 'Kumpul Ujian Otomatis' : 'Kumpul Ujian',
+        detail: completed.autoSubmittedReason
+          ? `${exam.title}: ${completed.autoSubmittedReason} (Nilai Sementara: ${calc.finalScore})`
+          : `Mengumpulkan ${exam.title} (Nilai Sementara: ${calc.finalScore})`,
+        examId: exam.id,
+        examTitle: exam.title,
+        studentNis: completed.studentNis,
+        studentClass: completed.studentClass,
       }
     );
     setActiveExamId(null);
@@ -221,6 +370,12 @@ export default function App() {
   // Teacher & Admin Mutations
   const handleAddQuestion = (q: Question) => {
     if (!currentUser) return;
+    if (
+      currentUser.role === 'guru' &&
+      !isTeacherSubjectMatch(currentUser.mapel, q.subject)
+    ) {
+      return;
+    }
     commitDatabase(
       (prev) => ({
         ...prev,
@@ -237,6 +392,14 @@ export default function App() {
 
   const handleDeleteQuestion = (questionId: string) => {
     if (!currentUser) return;
+    const targetQ = database.questions.find((q) => q.id === questionId);
+    if (
+      currentUser.role === 'guru' &&
+      targetQ &&
+      !isTeacherSubjectMatch(currentUser.mapel, targetQ.subject)
+    ) {
+      return;
+    }
     commitDatabase(
       (prev) => ({
         ...prev,
@@ -257,6 +420,12 @@ export default function App() {
 
   const handleSaveExam = (exam: Exam) => {
     if (!currentUser) return;
+    if (
+      currentUser.role === 'guru' &&
+      !isTeacherSubjectMatch(currentUser.mapel, exam.subject)
+    ) {
+      return;
+    }
     commitDatabase(
       (prev) => {
         const exists = prev.exams.some((e) => e.id === exam.id);
@@ -294,6 +463,14 @@ export default function App() {
 
   const handleUpdateSubmission = (sub: ExamSubmission) => {
     if (!currentUser) return;
+    const targetExam = database.exams.find((e) => e.id === sub.examId);
+    if (
+      currentUser.role === 'guru' &&
+      targetExam &&
+      !isTeacherSubjectMatch(currentUser.mapel, targetExam.subject)
+    ) {
+      return;
+    }
     commitDatabase(
       (prev) => ({
         ...prev,
@@ -320,6 +497,27 @@ export default function App() {
         actorRole: currentUser.role,
         action: 'Tambah Pengguna',
         detail: `Menambahkan akun ${newUser.role}: ${newUser.name} (${newUser.username})`,
+      }
+    );
+  };
+
+  const handleBulkImportUsers = (toInsert: User[], toUpdate: User[]) => {
+    if (!currentUser) return;
+    if (toInsert.length === 0 && toUpdate.length === 0) return;
+    const updateById = new Map(toUpdate.map((u) => [u.id, u]));
+    commitDatabase(
+      (prev) => ({
+        ...prev,
+        users: [
+          ...toInsert,
+          ...prev.users.map((u) => updateById.get(u.id) ?? u),
+        ],
+      }),
+      {
+        actorName: currentUser.name,
+        actorRole: currentUser.role,
+        action: 'Import Excel Pengguna',
+        detail: `Mengimpor ${toInsert.length} akun baru dan memperbarui ${toUpdate.length} akun`,
       }
     );
   };
@@ -389,12 +587,41 @@ export default function App() {
   }
 
   if (!currentUser) {
+    if (pendingStudentExam) {
+      return (
+        <StudentIdentityGate
+          exam={pendingStudentExam}
+          users={database.users}
+          submissions={database.submissions}
+          settings={database.settings}
+          onBack={() => setPendingStudentExam(null)}
+          onConfirm={(student) => {
+            const targetExam = pendingStudentExam;
+            setPendingStudentExam(null);
+            handleStudentExamEnter(targetExam, student);
+          }}
+        />
+      );
+    }
+
     return (
-      <LoginView
-        users={database.users}
-        settings={database.settings}
-        onLoginSuccess={handleLoginSuccess}
-      />
+      <>
+        <LoginView
+          users={database.users}
+          exams={database.exams}
+          settings={database.settings}
+          onLoginSuccess={handleLoginSuccess}
+          onStudentCodeVerified={(exam) => setPendingStudentExam(exam)}
+          onOpenChangePassword={() => setShowChangePasswordModal(true)}
+        />
+        {showChangePasswordModal && (
+          <ChangePasswordModal
+            users={database.users}
+            onPasswordChanged={handleChangePassword}
+            onClose={() => setShowChangePasswordModal(false)}
+          />
+        )}
+      </>
     );
   }
 
@@ -420,6 +647,18 @@ export default function App() {
           onSaveProgress={handleSaveExamProgress}
           onFinalSubmit={handleFinalSubmitExam}
           onExitWithoutSubmit={() => setActiveExamId(null)}
+          onLogExamEvent={(action, detail) => {
+            commitDatabase((prev) => prev, {
+              actorName: activeSubmission.studentName,
+              actorRole: 'siswa',
+              action,
+              detail,
+              examId: activeExam.id,
+              examTitle: activeExam.title,
+              studentNis: activeSubmission.studentNis,
+              studentClass: activeSubmission.studentClass,
+            });
+          }}
         />
       );
     }
@@ -433,9 +672,11 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <TopBar
         schoolName={database.settings.schoolName}
+        logoUrl={database.settings.logoUrl}
         user={currentUser}
         activeTab={effectiveTab}
         onSelectTab={handleSelectTab}
+        onOpenChangePassword={() => setShowChangePasswordModal(true)}
         onLogout={handleLogout}
       />
 
@@ -460,6 +701,7 @@ export default function App() {
             questions={database.questions}
             exams={database.exams}
             submissions={database.submissions}
+            activityLogs={database.activityLogs ?? []}
             capabilities={capabilities}
             onAddQuestion={handleAddQuestion}
             onDeleteQuestion={handleDeleteQuestion}
@@ -474,7 +716,9 @@ export default function App() {
             activeTab={effectiveTab}
             database={database}
             capabilities={capabilities}
+            onSelectTab={handleSelectTab}
             onAddUser={handleAddUser}
+            onBulkImportUsers={handleBulkImportUsers}
             onUpdateUser={handleUpdateUser}
             onDeleteUser={handleDeleteUser}
             onSaveExam={handleSaveExam}
@@ -485,7 +729,7 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 mt-auto">
+      <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 mt-auto print:hidden">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
           <span>
             © 2026 {database.settings.schoolName} · Tahun Ajaran{' '}
@@ -499,6 +743,19 @@ export default function App() {
           </span>
         </div>
       </footer>
+
+      {showChangePasswordModal && (
+        <ChangePasswordModal
+          users={database.users}
+          lockedUsername={
+            !currentUser.id.startsWith('usr-peserta-')
+              ? currentUser.username
+              : undefined
+          }
+          onPasswordChanged={handleChangePassword}
+          onClose={() => setShowChangePasswordModal(false)}
+        />
+      )}
     </div>
   );
 }

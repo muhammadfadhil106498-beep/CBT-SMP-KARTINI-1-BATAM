@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+const rootDir = import.meta.dirname;
+
 export default defineConfig(() => {
   return {
     base: './',
@@ -20,8 +22,8 @@ export default defineConfig(() => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(rootDir, 'dist');
+          const srcAssets = path.resolve(rootDir, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
@@ -35,7 +37,7 @@ export default defineConfig(() => {
               fs.copyFileSync(indexHtml, path.resolve(distDir, '404.html'));
             }
             // Copy root CNAME if provided for custom domain
-            const rootCname = path.resolve(__dirname, 'CNAME');
+            const rootCname = path.resolve(rootDir, 'CNAME');
             if (fs.existsSync(rootCname)) {
               fs.copyFileSync(rootCname, path.resolve(distDir, 'CNAME'));
             }
@@ -45,7 +47,7 @@ export default defineConfig(() => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(rootDir, '.'),
       },
     },
     server: {

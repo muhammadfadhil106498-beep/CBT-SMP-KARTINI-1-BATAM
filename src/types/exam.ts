@@ -12,8 +12,32 @@ export interface User {
   createdAt: string;
 }
 
-export type QuestionType = 'pg' | 'esai';
+export type QuestionType =
+  | 'pg'
+  | 'pg_kompleks'
+  | 'benar_salah'
+  | 'menjodohkan'
+  | 'esai';
+
 export type DifficultyLevel = 'Mudah' | 'Sedang' | 'Sulit';
+
+export type QuestionMediaType = 'image' | 'audio' | 'video';
+
+export interface QuestionMedia {
+  type: QuestionMediaType;
+  url: string;
+  name?: string;
+}
+
+export interface TrueFalseStatement {
+  text: string;
+  isTrue: boolean;
+}
+
+export interface MatchingPair {
+  left: string;
+  right: string;
+}
 
 export interface Question {
   id: string;
@@ -21,8 +45,12 @@ export interface Question {
   gradeLevel: '7' | '8' | '9';
   type: QuestionType;
   prompt: string;
+  media?: QuestionMedia;
   options?: string[];
   correctOptionIndex?: number;
+  correctOptionIndices?: number[];
+  statements?: TrueFalseStatement[];
+  matchingPairs?: MatchingPair[];
   rubric?: string;
   points: number;
   difficulty: DifficultyLevel;
@@ -54,6 +82,13 @@ export interface Exam {
 
 export type SessionStatus = 'sedang_mengerjakan' | 'selesai';
 
+export type QuestionAnswerValue =
+  | number
+  | string
+  | number[]
+  | Record<number, boolean>
+  | Record<number, string>;
+
 export interface ExamSubmission {
   id: string;
   examId: string;
@@ -61,7 +96,7 @@ export interface ExamSubmission {
   studentName: string;
   studentNis: string;
   studentClass: string;
-  answers: Record<string, number | string>;
+  answers: Record<string, QuestionAnswerValue>;
   flaggedIds: string[];
   essayScores: Record<string, number>;
   essayFeedback: Record<string, string>;
@@ -70,6 +105,7 @@ export interface ExamSubmission {
   finalScore: number;
   status: SessionStatus;
   tabSwitches: number;
+  autoSubmittedReason?: string;
   startedAt: string;
   submittedAt?: string;
   remainingSeconds: number;
@@ -86,7 +122,10 @@ export interface SystemSettings {
   maxTabSwitchWarnings: number;
   allowStudentScorePreview: boolean;
   maintenanceMode: boolean;
+  announcementTitle?: string;
   announcement: string;
+  logoUrl?: string;
+  heroImageUrl?: string;
 }
 
 export interface ActivityLog {
@@ -96,6 +135,10 @@ export interface ActivityLog {
   actorRole: UserRole;
   action: string;
   detail: string;
+  examId?: string;
+  examTitle?: string;
+  studentNis?: string;
+  studentClass?: string;
 }
 
 export interface AppDatabase {

@@ -2,9 +2,10 @@
 
 Aplikasi ujian berbasis web (*Computer-Based Test*) untuk **SMP Kartini 1 Batam** dengan **3 batasan login (Role-Based Access Control)**:
 
-1. **Siswa**: Login menggunakan NIS, melihat daftar ujian sesuai kelas, verifikasi token ujian, mengerjakan soal (Pilihan Ganda & Esai) dengan *countdown timer*, penanda ragu-ragu, auto-save jawaban, dan melihat riwayat nilai.
-2. **Guru**: Memantau progres peserta ujian secara langsung, mengelola Bank Soal & membuat paket ujian baru, mengoreksi jawaban esai, mengekspor nilai ke CSV, serta menggunakan **Asisten Penalaran Mendalam AI** (`gemini-4-carbon` dengan `ThinkingLevel.HIGH`) pada mode server Node.js.
-3. **Admin**: Mengelola seluruh data pengguna (Siswa, Guru, Admin), mengatur jadwal ujian global beserta deteksi bentrok kelas/ruang, mengubah konfigurasi sistem & profil sekolah, mencadangkan/mereset data JSON, dan memantau metrik performa serta log aktivitas sistem.
+1. **Siswa**: Langsung masuk melalui **Portal Siswa** hanya dengan **Kode Ujian** (tanpa perlu login kata sandi), mengerjakan soal (Pilihan Ganda & Esai) dengan *countdown timer*, penanda ragu-ragu, auto-save jawaban, pengawasan anti-pindah tab (layar terkunci sementara & wajib masukkan kembali kode ujian; pelanggaran ke-3 otomatis menyelesaikan dan mengirim ujian), serta melihat riwayat nilai.
+2. **Guru**: Login melalui **Portal Guru**, memantau progres peserta ujian secara langsung, mengelola Bank Soal & membuat paket ujian baru, mengoreksi jawaban esai, mengekspor nilai ke CSV, serta menggunakan **Asisten Penalaran Mendalam AI** (`gemini-4-carbon` dengan `ThinkingLevel.HIGH`) pada mode server Node.js.
+3. **Admin**: Login melalui **Portal Admin**, mengelola seluruh data pengguna (tambah/edit/hapus serta **Import Massal & Templat Excel**), mengatur jadwal ujian global beserta deteksi bentrok kelas/ruang, **mengubah logo, gambar utama, dan pengumuman pada halaman index**, mengubah konfigurasi sistem, mencadangkan/mereset data JSON, dan memantau metrik performa serta log aktivitas sistem.
+4. **Ganti Password**: Tersedia untuk seluruh pengguna terdaftar (Siswa, Guru, Admin) baik dari halaman index maupun dari bilah atas setelah masuk portal.
 
 ---
 
@@ -52,18 +53,15 @@ Aplikasi ini dirancang agar **dapat langsung diuji dan di-deploy dari GitHub**:
 
 ---
 
-## Akun Demo Uji Cepat
+## Akses Demo Uji Cepat
 
-Pada halaman login tersedia tombol pengisian otomatis, atau gunakan kredensial berikut:
+Pada halaman index tersedia pilihan 3 portal (**Portal Siswa**, **Portal Guru**, **Portal Admin**) beserta tombol pengisian cepat:
 
-| Peran | Username (NIS/NIP) | Kata Sandi | Ruang Lingkup |
+| Peran | Cara Masuk | Kredensial / Kode Demo | Ruang Lingkup |
 | :--- | :--- | :--- | :--- |
-| **Siswa** (Kelas 9A) | `240901` | `123` | Mengerjakan ujian & melihat riwayat nilai |
-| **Siswa** (Kelas 9B) | `240903` | `123` | Mengerjakan ujian kelas 9B |
-| **Guru** (Matematika) | `guru.mtk` | `123` | Bank soal, pantau progres, kelola nilai, asisten AI |
-| **Admin** (Proktor) | `admin` | `123` | Manajemen pengguna, jadwal global, sistem & log |
-
-*Catatan: Untuk ujian yang memerlukan token (misalnya IPA Terpadu), gunakan token `IPA9B2` (atau `KRT9M1` untuk Matematika).*
+| **Siswa** | Pilih **Portal Siswa** → masukkan **Kode Ujian** (tanpa kata sandi) | Kode `KRT9M1` (Matematika) atau `IPA9B2` (IPA Terpadu) | Langsung mengerjakan ujian dengan proteksi pindah tab (maks. 3 kali) & melihat riwayat nilai |
+| **Guru** (Matematika) | Pilih **Portal Guru** → username & kata sandi | `guru.mtk` / `123` | Bank soal, pantau progres live, kelola nilai, asisten AI |
+| **Admin** (Proktor) | Pilih **Portal Admin** → username & kata sandi | `admin` / `123` | Pengguna + Import Excel, jadwal global, kustomisasi index, sistem & log |
 
 ---
 
@@ -115,7 +113,7 @@ npm run build
 Repositori ini sudah dikonfigurasi penuh untuk GitHub Pages melalui `.github/workflows/pages.yml`, `.npmrc`, `vite.config.ts` (`base: './'`, `.nojekyll`, dan `404.html` fallback):
 1. Push seluruh repositori ke GitHub (branch `main` atau `master`).
 2. Buka **Settings → Pages** di repositori GitHub Anda.
-3. Pada bagian **Build and deployment → Source**, pilih **GitHub Actions**.
+3. Pada bagian **Build and deployment → Source**, **wajib ubah dari "Deploy from a branch" menjadi "GitHub Actions"**. *(Jika masih disetel ke "Deploy from a branch", GitHub akan menjalankan `pages build and deployment (dynamic)` dan workflow `Deploy to GitHub Pages` akan gagal pada langkah `Setup Pages`.)*
 4. Workflow **Deploy to GitHub Pages** akan berjalan otomatis setiap kali ada push ke `main`/`master` (atau bisa dijalankan manual lewat tab **Actions → Deploy to GitHub Pages → Run workflow**).
 
 ### Menggunakan Custom Domain di GitHub Pages

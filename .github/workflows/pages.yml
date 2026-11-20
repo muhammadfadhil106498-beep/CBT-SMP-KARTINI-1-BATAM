@@ -25,18 +25,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci || npm install
           else
             npm install
           fi
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
 
       - name: TypeScript typecheck
         run: npm run lint
@@ -50,6 +46,11 @@ jobs:
       - name: Configure Custom Domain CNAME (optional)
         if: ${{ vars.CUSTOM_DOMAIN != '' }}
         run: echo "${{ vars.CUSTOM_DOMAIN }}" > ./dist/CNAME
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

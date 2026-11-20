@@ -10,7 +10,29 @@ import type { AppDatabase } from './src/types/exam.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 3000);
+function resolveServerPort(): number {
+  const portFlagIndex = process.argv.indexOf('--port');
+  if (portFlagIndex !== -1 && process.argv[portFlagIndex + 1]) {
+    const cliPort = Number(process.argv[portFlagIndex + 1]);
+    if (Number.isFinite(cliPort) && cliPort > 0) {
+      return cliPort;
+    }
+  }
+  const envPort = Number(process.env.PORT);
+  const nginxPort = Number(process.env.NGINX_PORT);
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    Number.isFinite(envPort) &&
+    Number.isFinite(nginxPort) &&
+    envPort === nginxPort
+  ) {
+    const fallbackPort = Number(process.env.DEFAULT_APP_PORT || 3000);
+    return Number.isFinite(fallbackPort) && fallbackPort > 0 ? fallbackPort : 3000;
+  }
+  return Number.isFinite(envPort) && envPort > 0 ? envPort : 3000;
+}
+
+const PORT = resolveServerPort();
 const DATA_DIR = path.resolve(__dirname, 'data');
 const DB_FILE = path.resolve(DATA_DIR, 'db.json');
 
@@ -58,7 +80,7 @@ function createGeminiClient(): GoogleGenAI | null {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '25mb' }));
 
   app.get('/api/health', (_req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -198,12 +220,30 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
+    const hmrEnabled = process.env.DISABLE_HMR !== 'true';
+    const vitePromise = import('vite').then(({ createServer: createViteServer }) =>
+      createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: hmrEnabled,
+          ws: hmrEnabled ? undefined : false,
+        },
+        appType: 'spa',
+      })
+    );
+
+    vitePromise.catch((err) => {
+      console.error('Failed to initialize Vite middleware:', err);
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        vite.middlewares(req, res, next);
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distDir = path.resolve(__dirname, 'dist');
     app.use(express.static(distDir));

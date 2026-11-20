@@ -32,6 +32,20 @@ export async function checkBackendCapabilities(): Promise<BackendCapabilities> {
   }
 }
 
+export function normalizeDatabase(db: AppDatabase): AppDatabase {
+  return {
+    ...db,
+    settings: {
+      ...SEED_DATABASE.settings,
+      ...(db.settings ?? {}),
+      logoUrl: db.settings?.logoUrl || SEED_DATABASE.settings.logoUrl,
+      heroImageUrl: db.settings?.heroImageUrl || SEED_DATABASE.settings.heroImageUrl,
+      announcementTitle:
+        db.settings?.announcementTitle || SEED_DATABASE.settings.announcementTitle,
+    },
+  };
+}
+
 export function readLocalDatabase(): AppDatabase | null {
   try {
     const raw = localStorage.getItem(LOCAL_DB_KEY);
@@ -44,7 +58,7 @@ export function readLocalDatabase(): AppDatabase | null {
       Array.isArray(parsed.exams) &&
       Array.isArray(parsed.submissions)
     ) {
-      return parsed;
+      return normalizeDatabase(parsed);
     }
     return null;
   } catch {
@@ -69,7 +83,7 @@ export async function loadDatabase(): Promise<{
     try {
       const res = await fetch('./api/state');
       if (res.ok) {
-        const serverDb = (await res.json()) as AppDatabase;
+        const serverDb = normalizeDatabase((await res.json()) as AppDatabase);
         writeLocalDatabase(serverDb);
         return { db: serverDb, capabilities };
       }

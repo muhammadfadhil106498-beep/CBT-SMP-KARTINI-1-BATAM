@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock,
   FileText,
@@ -118,6 +119,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           ) / 10
         : 0;
 
+    const autoSubmittedNotice = completedSubs.find((s) => Boolean(s.autoSubmittedReason));
+
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
@@ -126,7 +129,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               Riwayat Nilai Ujian
             </h1>
             <p className="text-sm text-slate-600 mt-1">
-              {user.name} · NIS {user.username} · Kelas {user.kelas}
+              {user.name} · No. Peserta {user.username} · Kelas {user.kelas}
             </p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl px-5 py-3 flex items-center gap-6">
@@ -145,6 +148,19 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             </div>
           </div>
         </div>
+
+        {autoSubmittedNotice && (
+          <div
+            role="status"
+            className="p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3 text-xs text-amber-950"
+          >
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">Ujian Dinyatakan Selesai Otomatis</p>
+              <p>{autoSubmittedNotice.autoSubmittedReason}</p>
+            </div>
+          </div>
+        )}
 
         {completedSubs.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-xl p-10 text-center space-y-2">
@@ -234,7 +250,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <p className="text-xs font-medium text-teal-700 mb-1">
-            Ruang Peserta Didik · Kelas {user.kelas} · NIS {user.username}
+            Ruang Peserta Didik · Kelas {user.kelas} · No. Peserta {user.username}
           </p>
           <h1 className="font-display text-2xl font-bold text-slate-900">
             Selamat Datang, {user.name}

@@ -2,29 +2,39 @@ import React, { useMemo, useState } from 'react';
 import {
   BrainCircuit,
   CheckCircle2,
-  Download,
   FilePlus2,
+  Image as ImageIcon,
   Layers,
   Loader2,
   Plus,
   Search,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react';
 import type {
+  ActivityLog,
   DifficultyLevel,
   Exam,
   ExamSubmission,
+  MatchingPair,
   Question,
+  QuestionMedia,
   QuestionType,
+  TrueFalseStatement,
   User,
 } from '../types/exam';
 import {
   computeExamProgressStats,
-  exportSubmissionsToCsv,
+  filterExamsForTeacher,
+  filterLogsForTeacher,
+  filterQuestionsForTeacher,
+  filterSubmissionsForTeacher,
   gradeSubmission,
   isClassEligibleForExam,
+  isTeacherSubjectMatch,
   PortalTab,
+  QUESTION_TYPE_LABELS,
 } from '../utils/examEngine';
 import {
   BackendCapabilities,
@@ -32,6 +42,11 @@ import {
   requestAiExamAnalysis,
   requestAiQuestionGeneration,
 } from '../services/storage';
+import {
+  inferMediaTypeFromUrl,
+  readQuestionMediaFile,
+} from '../utils/mediaUpload';
+import { GradeAndLogReportPanel } from './GradeAndLogReportPanel';
 
 interface TeacherPortalProps {
   user: User;
@@ -40,6 +55,7 @@ interface TeacherPortalProps {
   questions: Question[];
   exams: Exam[];
   submissions: ExamSubmission[];
+  activityLogs: ActivityLog[];
   capabilities: BackendCapabilities;
   onAddQuestion: (q: Question) => void;
   onDeleteQuestion: (questionId: string) => void;
@@ -54,22 +70,46 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   questions,
   exams,
   submissions,
+  activityLogs,
   capabilities,
   onAddQuestion,
   onDeleteQuestion,
   onSaveExam,
   onUpdateSubmission,
 }) => {
-  const [selectedExamId, setSelectedExamId] = useState<string>(
-    exams[0]?.id ?? ''
+  const teacherSubject = (user.mapel ?? '').trim();
+
+  const scopedQuestions = useMemo(
+    () => filterQuestionsForTeacher(questions, user),
+    [questions, user]
   );
+
+  const scopedExams = useMemo(
+    () => filterExamsForTeacher(exams, user),
+    [exams, user]
+  );
+
+  const scopedSubmissions = useMemo(
+    () => filterSubmissionsForTeacher(submissions, scopedExams),
+    [submissions, scopedExams]
+  );
+
+  const scopedLogs = useMemo(
+    () => filterLogsForTeacher(activityLogs, scopedExams, user),
+    [activityLogs, scopedExams, user]
+  );
+
+  const [selectedExamId, setSelectedExamId] = useState<string>(
+    scopedExams[0]?.id ?? ''
+  );
+  const [reportExamId, setReportExamId] = useState<string>('semua');
   const [searchStudent, setSearchStudent] = useState('');
   const [progressFilter, setProgressFilter] = useState<
     'semua' | 'sedang_mengerjakan' | 'selesai'
   >('semua');
 
-  // Question form state
-  const [qSubject, setQSubject] = useState(user.mapel || 'Matematika');
+  // Question form state (5 types + media) - subject locked to teacher's mapel
+  const qSubject = teacherSubject || 'Umum';
   const [qGrade, setQGrade] = useState<'7' | '8' | '9'>('9');
   const [qType, setQType] = useState<QuestionType>('pg');
   const [qDifficulty, setQDifficulty] = useState<DifficultyLevel>('Sedang');
@@ -77,13 +117,25 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [qPrompt, setQPrompt] = useState('');
   const [qOptions, setQOptions] = useState(['', '', '', '']);
   const [qCorrectIdx, setQCorrectIdx] = useState(0);
+  const [qCorrectIndices, setQCorrectIndices] = useState<number[]>([0, 1]);
+  const [qStatements, setQStatements] = useState<TrueFalseStatement[]>([
+    { text: '', isTrue: true },
+    { text: '', isTrue: false },
+  ]);
+  const [qMatchingPairs, setQMatchingPairs] = useState<MatchingPair[]>([
+    { left: '', right: '' },
+    { left: '', right: '' },
+  ]);
   const [qRubric, setQRubric] = useState('');
+  const [qMedia, setQMedia] = useState<QuestionMedia | undefined>(undefined);
+  const [qMediaUrlInput, setQMediaUrlInput] = useState('');
+  const [qMediaError, setQMediaError] = useState<string | null>(null);
   const [qFormMsg, setQFormMsg] = useState<string | null>(null);
 
-  // Exam builder modal
+  // Exam builder modal - subject locked to teacher's mapel
   const [showExamModal, setShowExamModal] = useState(false);
   const [newExTitle, setNewExTitle] = useState('');
-  const [newExSubject, setNewExSubject] = useState(user.mapel || 'Matematika');
+  const newExSubject = teacherSubject || 'Umum';
   const [newExClass, setNewExClass] = useState('Semua Kelas 9');
   const [newExDuration, setNewExDuration] = useState(45);
   const [newExToken, setNewExToken] = useState('KRT9X1');
@@ -95,9 +147,9 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [draftEssayScores, setDraftEssayScores] = useState<Record<string, number>>({});
   const [draftEssayFeedback, setDraftEssayFeedback] = useState<Record<string, string>>({});
 
-  // AI Deep Thinking Assistant state
-  const [aiTopic, setAiTopic] = useState('Persamaan Kuadrat & Aplikasi Nyata');
-  const [aiSubject, setAiSubject] = useState(user.mapel || 'Matematika');
+  // AI Deep Thinking Assistant state - subject locked to teacher's mapel
+  const [aiTopic, setAiTopic] = useState('Konsep Inti & Aplikasi Nyata');
+  const aiSubject = teacherSubject || 'Umum';
   const [aiGrade, setAiGrade] = useState<'7' | '8' | '9'>('9');
   const [aiQType, setAiQType] = useState<QuestionType>('pg');
   const [aiCount, setAiCount] = useState(2);
@@ -110,8 +162,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [aiAnalysisResult, setAiAnalysisResult] = useState<string | null>(null);
 
   const selectedExam = useMemo(
-    () => exams.find((e) => e.id === selectedExamId) ?? exams[0],
-    [exams, selectedExamId]
+    () => scopedExams.find((e) => e.id === selectedExamId) ?? scopedExams[0],
+    [scopedExams, selectedExamId]
   );
 
   const students = useMemo(
@@ -128,8 +180,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
   const selectedExamSubs = useMemo(() => {
     if (!selectedExam) return [];
-    return submissions.filter((s) => s.examId === selectedExam.id);
-  }, [submissions, selectedExam]);
+    return scopedSubmissions.filter((s) => s.examId === selectedExam.id);
+  }, [scopedSubmissions, selectedExam]);
 
   const progressStats = useMemo(() => {
     if (!selectedExam) {
@@ -143,10 +195,10 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     }
     return computeExamProgressStats(
       selectedExam,
-      submissions,
+      scopedSubmissions,
       eligibleStudentsForSelected.length
     );
-  }, [selectedExam, submissions, eligibleStudentsForSelected.length]);
+  }, [selectedExam, scopedSubmissions, eligibleStudentsForSelected.length]);
 
   const filteredSubs = useMemo(() => {
     const q = searchStudent.trim().toLowerCase();
@@ -162,6 +214,38 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     });
   }, [selectedExamSubs, searchStudent, progressFilter]);
 
+  const handleQuestionMediaFile = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setQMediaError(null);
+    try {
+      const processed = await readQuestionMediaFile(file);
+      setQMedia({
+        type: processed.type,
+        url: processed.url,
+        name: processed.name,
+      });
+      setQMediaUrlInput('');
+    } catch (err) {
+      setQMediaError(
+        err instanceof Error ? err.message : 'Gagal memproses file media.'
+      );
+    }
+  };
+
+  const handleApplyMediaUrl = () => {
+    const clean = qMediaUrlInput.trim();
+    if (!clean) return;
+    setQMediaError(null);
+    setQMedia({
+      type: inferMediaTypeFromUrl(clean),
+      url: clean,
+      name: 'Media URL',
+    });
+  };
+
   const handleCreateQuestion = (e: React.FormEvent) => {
     e.preventDefault();
     if (!qPrompt.trim()) {
@@ -172,6 +256,31 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       setQFormMsg('Keempat opsi pilihan ganda wajib diisi lengkap.');
       return;
     }
+    if (qType === 'pg_kompleks') {
+      if (qOptions.some((o) => !o.trim())) {
+        setQFormMsg('Keempat opsi pilihan ganda kompleks wajib diisi lengkap.');
+        return;
+      }
+      if (qCorrectIndices.length === 0) {
+        setQFormMsg('Pilih minimal 1 kunci jawaban benar untuk PG Kompleks.');
+        return;
+      }
+    }
+    if (
+      qType === 'benar_salah' &&
+      (qStatements.length === 0 || qStatements.some((st) => !st.text.trim()))
+    ) {
+      setQFormMsg('Seluruh pernyataan Benar / Salah wajib diisi teksnya.');
+      return;
+    }
+    if (
+      qType === 'menjodohkan' &&
+      (qMatchingPairs.length === 0 ||
+        qMatchingPairs.some((p) => !p.left.trim() || !p.right.trim()))
+    ) {
+      setQFormMsg('Seluruh pasangan premis & jawaban Menjodohkan wajib diisi lengkap.');
+      return;
+    }
 
     const newQ: Question = {
       id: `q-${Date.now()}`,
@@ -179,8 +288,25 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       gradeLevel: qGrade,
       type: qType,
       prompt: qPrompt.trim(),
-      options: qType === 'pg' ? qOptions.map((o) => o.trim()) : undefined,
+      media: qMedia,
+      options:
+        qType === 'pg' || qType === 'pg_kompleks'
+          ? qOptions.map((o) => o.trim())
+          : undefined,
       correctOptionIndex: qType === 'pg' ? qCorrectIdx : undefined,
+      correctOptionIndices:
+        qType === 'pg_kompleks' ? [...qCorrectIndices].sort((a, b) => a - b) : undefined,
+      statements:
+        qType === 'benar_salah'
+          ? qStatements.map((s) => ({ text: s.text.trim(), isTrue: s.isTrue }))
+          : undefined,
+      matchingPairs:
+        qType === 'menjodohkan'
+          ? qMatchingPairs.map((p) => ({
+              left: p.left.trim(),
+              right: p.right.trim(),
+            }))
+          : undefined,
       rubric: qRubric.trim() || undefined,
       points: Math.max(1, Number(qPoints) || 10),
       difficulty: qDifficulty,
@@ -191,7 +317,18 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     onAddQuestion(newQ);
     setQPrompt('');
     setQOptions(['', '', '', '']);
+    setQCorrectIndices([0, 1]);
+    setQStatements([
+      { text: '', isTrue: true },
+      { text: '', isTrue: false },
+    ]);
+    setQMatchingPairs([
+      { left: '', right: '' },
+      { left: '', right: '' },
+    ]);
     setQRubric('');
+    setQMedia(undefined);
+    setQMediaUrlInput('');
     setQFormMsg('Butir soal berhasil disimpan ke Bank Soal.');
   };
 
@@ -232,18 +369,6 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     setNewExSelectedQs([]);
   };
 
-  const handleDownloadCsv = () => {
-    if (!selectedExam) return;
-    const csv = exportSubmissionsToCsv(selectedExam, submissions);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `nilai-${selectedExam.subject.toLowerCase().replace(/\s+/g, '-')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const openEssayGrading = (sub: ExamSubmission) => {
     setGradingSubId(sub.id);
     setDraftEssayScores({ ...sub.essayScores });
@@ -252,10 +377,11 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
   const saveEssayGrading = () => {
     if (!gradingSubId || !selectedExam) return;
-    const targetSub = submissions.find((s) => s.id === gradingSubId);
+    if (!isTeacherSubjectMatch(user.mapel, selectedExam.subject)) return;
+    const targetSub = scopedSubmissions.find((s) => s.id === gradingSubId);
     if (!targetSub) return;
 
-    const examQuestions = questions.filter((q) =>
+    const examQuestions = scopedQuestions.filter((q) =>
       selectedExam.questionIds.includes(q.id)
     );
     const calc = gradeSubmission(examQuestions, targetSub.answers, draftEssayScores);
@@ -386,14 +512,14 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     htmlFor="ai-subject"
                     className="block text-xs font-semibold text-slate-700 mb-1"
                   >
-                    Mata Pelajaran
+                    Mata Pelajaran (Terkunci Mapel Guru)
                   </label>
                   <input
                     id="ai-subject"
                     type="text"
+                    readOnly
                     value={aiSubject}
-                    onChange={(e) => setAiSubject(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
                   />
                 </div>
                 <div>
@@ -596,11 +722,14 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div>
+            <p className="text-xs font-semibold text-teal-700 mb-1">
+              Akses Khusus Mapel: {teacherSubject || 'Belum Diatur'}
+            </p>
             <h1 className="font-display text-2xl font-bold text-slate-900">
-              Bank Soal & Paket Ujian
+              Bank Soal &amp; Paket Ujian
             </h1>
             <p className="text-sm text-slate-600 mt-1">
-              Kelola butir soal Pilihan Ganda dan Esai serta rangkai jadwal ujian baru.
+              Menampilkan dan mengelola soal khusus mata pelajaran <strong>{teacherSubject || 'Anda'}</strong> dalam 5 tipe soal beserta lampiran media.
             </p>
           </div>
           <button
@@ -635,9 +764,9 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   <input
                     id="q-subject"
                     type="text"
+                    readOnly
                     value={qSubject}
-                    onChange={(e) => setQSubject(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 text-slate-700 font-medium"
                   />
                 </div>
                 <div>
@@ -668,15 +797,18 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     htmlFor="q-type"
                     className="block text-xs font-semibold text-slate-700 mb-1"
                   >
-                    Tipe
+                    Tipe Soal
                   </label>
                   <select
                     id="q-type"
                     value={qType}
                     onChange={(e) => setQType(e.target.value as QuestionType)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                    className="w-full px-2.5 py-2 text-sm border border-slate-300 rounded-lg bg-white"
                   >
                     <option value="pg">Pilihan Ganda</option>
+                    <option value="pg_kompleks">PG Kompleks</option>
+                    <option value="benar_salah">Benar / Salah</option>
+                    <option value="menjodohkan">Menjodohkan</option>
                     <option value="esai">Esai</option>
                   </select>
                 </div>
@@ -693,7 +825,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     onChange={(e) =>
                       setQDifficulty(e.target.value as DifficultyLevel)
                     }
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg bg-white"
+                    className="w-full px-2.5 py-2 text-sm border border-slate-300 rounded-lg bg-white"
                   >
                     <option value="Mudah">Mudah</option>
                     <option value="Sedang">Sedang</option>
@@ -736,10 +868,85 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 />
               </div>
 
-              {qType === 'pg' ? (
+              {/* Upload Media Soal */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-800">
+                    <ImageIcon className="w-3.5 h-3.5 text-teal-700" />
+                    <span>Upload Media Soal (Opsional: Gambar / Audio / Video)</span>
+                  </span>
+                  {qMedia && (
+                    <button
+                      type="button"
+                      onClick={() => setQMedia(undefined)}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-red-700 hover:underline cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                      <span>Hapus Media</span>
+                    </button>
+                  )}
+                </div>
+
+                <input
+                  id="q-media-file"
+                  aria-label="Unggah file media soal"
+                  type="file"
+                  accept="image/*,audio/*,video/*"
+                  onChange={handleQuestionMediaFile}
+                  className="block w-full text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-800 hover:file:bg-slate-100 cursor-pointer"
+                />
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={qMediaUrlInput}
+                    onChange={(e) => setQMediaUrlInput(e.target.value)}
+                    placeholder="Atau tempel URL gambar/audio/video..."
+                    className="flex-1 px-2.5 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyMediaUrl}
+                    className="px-2.5 py-1.5 text-xs font-semibold bg-white border border-slate-300 hover:bg-slate-100 rounded-lg text-slate-700 cursor-pointer"
+                  >
+                    Pakai URL
+                  </button>
+                </div>
+
+                {qMediaError && (
+                  <p role="alert" className="text-xs font-medium text-red-700">
+                    {qMediaError}
+                  </p>
+                )}
+
+                {qMedia && (
+                  <div className="pt-1">
+                    {qMedia.type === 'image' && (
+                      <img
+                        src={qMedia.url}
+                        alt={qMedia.name || 'Pratinjau media soal'}
+                        className="max-h-36 rounded-lg border border-slate-200 object-contain bg-white"
+                      />
+                    )}
+                    {qMedia.type === 'audio' && (
+                      <audio controls src={qMedia.url} className="w-full" />
+                    )}
+                    {qMedia.type === 'video' && (
+                      <video
+                        controls
+                        src={qMedia.url}
+                        className="w-full max-h-40 rounded-lg border border-slate-200 bg-black"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Editor for each of 5 question types */}
+              {qType === 'pg' && (
                 <div className="space-y-2.5">
                   <p className="text-xs font-semibold text-slate-700">
-                    Pilihan Jawaban & Kunci Benar
+                    Pilihan Jawaban &amp; Kunci Benar (1 Opsi)
                   </p>
                   {qOptions.map((opt, idx) => (
                     <div key={idx} className="flex items-center gap-2">
@@ -765,7 +972,184 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     </div>
                   ))}
                 </div>
-              ) : (
+              )}
+
+              {qType === 'pg_kompleks' && (
+                <div className="space-y-2.5">
+                  <p className="text-xs font-semibold text-slate-700">
+                    Pilihan Jawaban &amp; Kunci Benar (Centang Bisa Lebih dari 1)
+                  </p>
+                  {qOptions.map((opt, idx) => {
+                    const isChecked = qCorrectIndices.includes(idx);
+                    return (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          aria-label={`Tandai opsi kompleks ${String.fromCharCode(65 + idx)} benar`}
+                          checked={isChecked}
+                          onChange={() =>
+                            setQCorrectIndices((prev) =>
+                              isChecked
+                                ? prev.filter((i) => i !== idx)
+                                : [...prev, idx]
+                            )
+                          }
+                          className="accent-teal-700"
+                        />
+                        <input
+                          type="text"
+                          value={opt}
+                          onChange={(e) => {
+                            const next = [...qOptions];
+                            next[idx] = e.target.value;
+                            setQOptions(next);
+                          }}
+                          placeholder={`Opsi ${String.fromCharCode(65 + idx)}`}
+                          className="flex-1 px-3 py-1.5 text-sm border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {qType === 'benar_salah' && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Daftar Pernyataan Benar / Salah
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQStatements((prev) => [
+                          ...prev,
+                          { text: '', isTrue: true },
+                        ])
+                      }
+                      className="text-xs font-semibold text-teal-700 hover:underline cursor-pointer"
+                    >
+                      + Tambah Pernyataan
+                    </button>
+                  </div>
+                  {qStatements.map((st, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 border border-slate-200"
+                    >
+                      <input
+                        type="text"
+                        value={st.text}
+                        onChange={(e) => {
+                          const next = [...qStatements];
+                          next[idx] = { ...next[idx], text: e.target.value };
+                          setQStatements(next);
+                        }}
+                        placeholder={`Pernyataan ${idx + 1}`}
+                        className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+                      />
+                      <select
+                        aria-label={`Kunci pernyataan ${idx + 1}`}
+                        value={st.isTrue ? 'benar' : 'salah'}
+                        onChange={(e) => {
+                          const next = [...qStatements];
+                          next[idx] = {
+                            ...next[idx],
+                            isTrue: e.target.value === 'benar',
+                          };
+                          setQStatements(next);
+                        }}
+                        className="px-2 py-1.5 text-xs border border-slate-300 rounded-lg bg-white font-semibold"
+                      >
+                        <option value="benar">Benar</option>
+                        <option value="salah">Salah</option>
+                      </select>
+                      {qStatements.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label={`Hapus pernyataan ${idx + 1}`}
+                          onClick={() =>
+                            setQStatements((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            )
+                          }
+                          className="p-1 text-slate-400 hover:text-red-700 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {qType === 'menjodohkan' && (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-700">
+                      Pasangan Premis &amp; Jawaban Menjodohkan
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setQMatchingPairs((prev) => [
+                          ...prev,
+                          { left: '', right: '' },
+                        ])
+                      }
+                      className="text-xs font-semibold text-teal-700 hover:underline cursor-pointer"
+                    >
+                      + Tambah Pasangan
+                    </button>
+                  </div>
+                  {qMatchingPairs.map((pair, idx) => (
+                    <div
+                      key={idx}
+                      className="flex items-center gap-2 p-2 rounded-lg bg-slate-50 border border-slate-200"
+                    >
+                      <input
+                        type="text"
+                        value={pair.left}
+                        onChange={(e) => {
+                          const next = [...qMatchingPairs];
+                          next[idx] = { ...next[idx], left: e.target.value };
+                          setQMatchingPairs(next);
+                        }}
+                        placeholder={`Premis ${idx + 1}`}
+                        className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+                      />
+                      <span className="text-xs text-slate-400">→</span>
+                      <input
+                        type="text"
+                        value={pair.right}
+                        onChange={(e) => {
+                          const next = [...qMatchingPairs];
+                          next[idx] = { ...next[idx], right: e.target.value };
+                          setQMatchingPairs(next);
+                        }}
+                        placeholder={`Pasangan ${idx + 1}`}
+                        className="flex-1 px-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
+                      />
+                      {qMatchingPairs.length > 1 && (
+                        <button
+                          type="button"
+                          aria-label={`Hapus pasangan ${idx + 1}`}
+                          onClick={() =>
+                            setQMatchingPairs((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            )
+                          }
+                          className="p-1 text-slate-400 hover:text-red-700 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {qType === 'esai' && (
                 <div>
                   <label
                     htmlFor="q-rubric"
@@ -801,36 +1185,80 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
           {/* Question Bank List */}
           <section className="lg:col-span-7 bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-2">
               <h2 className="font-display text-base font-bold text-slate-900">
-                Daftar Bank Soal ({questions.length})
+                Daftar Bank Soal {teacherSubject ? `· ${teacherSubject}` : ''} ({scopedQuestions.length})
               </h2>
+              <span className="text-xs text-slate-500">
+                Khusus mapel diampu
+              </span>
             </div>
 
+            {scopedQuestions.length === 0 ? (
+              <div className="p-10 text-center text-sm text-slate-600">
+                Belum ada butir soal untuk mata pelajaran {teacherSubject || 'Anda'}. Gunakan formulir di sebelah kiri untuk menambahkan soal baru.
+              </div>
+            ) : (
             <div className="divide-y divide-slate-200">
-              {questions.map((q, index) => (
+              {scopedQuestions.map((q, index) => (
                 <div key={q.id} className="p-5 flex items-start justify-between gap-4">
-                  <div className="space-y-1.5 min-w-0">
-                    <div className="text-xs text-slate-500">
+                  <div className="space-y-1.5 min-w-0 flex-1">
+                    <div className="text-xs text-slate-500 flex flex-wrap items-center gap-1.5">
                       <span className="font-semibold text-slate-800">
                         #{index + 1} · {q.subject}
                       </span>
-                      {' · '}
-                      <span>Kelas {q.gradeLevel}</span>
-                      {' · '}
-                      <span>{q.type === 'pg' ? 'Pilihan Ganda' : 'Esai'}</span>
-                      {' · '}
+                      <span>· Kelas {q.gradeLevel}</span>
+                      <span>·</span>
+                      <span className="font-semibold text-teal-700">
+                        {QUESTION_TYPE_LABELS[q.type]}
+                      </span>
+                      <span>·</span>
                       <span className="font-mono tabular-nums">{q.points} poin</span>
-                      {' · '}
-                      <span>{q.difficulty}</span>
+                      <span>· {q.difficulty}</span>
+                      {q.media && (
+                        <span className="font-semibold text-slate-700">
+                          · Media: {q.media.type.toUpperCase()}
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm text-slate-900 leading-relaxed">
                       {q.prompt}
                     </p>
+                    {q.media?.type === 'image' && (
+                      <img
+                        src={q.media.url}
+                        alt={q.media.name || 'Gambar soal'}
+                        className="max-h-24 rounded-lg border border-slate-200 object-contain bg-slate-50"
+                      />
+                    )}
                     {q.type === 'pg' && q.options && (
                       <p className="text-xs text-emerald-700 font-medium">
                         Kunci: {String.fromCharCode(65 + (q.correctOptionIndex ?? 0))}.{' '}
                         {q.options[q.correctOptionIndex ?? 0]}
+                      </p>
+                    )}
+                    {q.type === 'pg_kompleks' && q.options && (
+                      <p className="text-xs text-emerald-700 font-medium">
+                        Kunci Kompleks:{' '}
+                        {(q.correctOptionIndices ?? [])
+                          .map((i) => `${String.fromCharCode(65 + i)}. ${q.options?.[i] ?? ''}`)
+                          .join(' | ')}
+                      </p>
+                    )}
+                    {q.type === 'benar_salah' && q.statements && (
+                      <p className="text-xs text-emerald-700 font-medium">
+                        {q.statements.length} pernyataan:{' '}
+                        {q.statements
+                          .map((st, si) => `${si + 1}) ${st.isTrue ? 'Benar' : 'Salah'}`)
+                          .join(' · ')}
+                      </p>
+                    )}
+                    {q.type === 'menjodohkan' && q.matchingPairs && (
+                      <p className="text-xs text-emerald-700 font-medium">
+                        {q.matchingPairs.length} pasangan:{' '}
+                        {q.matchingPairs
+                          .map((p) => `${p.left} → ${p.right}`)
+                          .join(' · ')}
                       </p>
                     )}
                   </div>
@@ -846,6 +1274,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 </div>
               ))}
             </div>
+            )}
           </section>
         </div>
 
@@ -896,9 +1325,9 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   <input
                     id="new-ex-subject"
                     type="text"
+                    readOnly
                     value={newExSubject}
-                    onChange={(e) => setNewExSubject(e.target.value)}
-                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg bg-slate-50 text-slate-700"
                   />
                 </div>
                 <div>
@@ -966,10 +1395,10 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
               <div>
                 <p className="text-xs font-semibold text-slate-700 mb-2">
-                  Pilih Soal dari Bank ({newExSelectedQs.length} dipilih)
+                  Pilih Soal Mapel {teacherSubject} ({newExSelectedQs.length} dipilih)
                 </p>
                 <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100">
-                  {questions.map((q) => {
+                  {scopedQuestions.map((q) => {
                     const checked = newExSelectedQs.includes(q.id);
                     return (
                       <label
@@ -1023,111 +1452,32 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     );
   }
 
-  // TAB 3: Kelola Nilai & Koreksi Esai
+  // TAB 3: Kelola Nilai Per Kelas, Download Excel, Log Pengerjaan Siswa & Koreksi Esai
   if (activeTab === 'guru-nilai') {
-    const gradingSub = submissions.find((s) => s.id === gradingSubId);
-    const gradingExamQuestions = selectedExam
-      ? questions.filter((q) => selectedExam.questionIds.includes(q.id))
+    const gradingSub = scopedSubmissions.find((s) => s.id === gradingSubId);
+    const gradingExam =
+      scopedExams.find((e) => e.id === gradingSub?.examId) ?? selectedExam;
+    const gradingExamQuestions = gradingExam
+      ? scopedQuestions.filter((q) => gradingExam.questionIds.includes(q.id))
       : [];
     const essayQuestions = gradingExamQuestions.filter((q) => q.type === 'esai');
 
     return (
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div>
-            <h1 className="font-display text-2xl font-bold text-slate-900">
-              Pengelolaan Nilai Siswa
-            </h1>
-            <p className="text-sm text-slate-600 mt-1">
-              Koreksi jawaban esai, pantau nilai akhir, dan ekspor rekap nilai ke CSV.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              aria-label="Pilih ujian untuk kelola nilai"
-              value={selectedExam?.id ?? ''}
-              onChange={(e) => setSelectedExamId(e.target.value)}
-              className="px-3.5 py-2 text-sm bg-white border border-slate-200 rounded-lg font-medium text-slate-900"
-            >
-              {exams.map((ex) => (
-                <option key={ex.id} value={ex.id}>
-                  {ex.title}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              onClick={handleDownloadCsv}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>Download CSV</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-          {selectedExamSubs.length === 0 ? (
-            <div className="p-10 text-center text-sm text-slate-600">
-              Belum ada peserta yang mengumpulkan ujian ini.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
-                    <th className="py-3.5 px-5">NIS</th>
-                    <th className="py-3.5 px-4">Nama Siswa</th>
-                    <th className="py-3.5 px-4">Kelas</th>
-                    <th className="py-3.5 px-4 text-right">Skor PG</th>
-                    <th className="py-3.5 px-4 text-right">Skor Esai</th>
-                    <th className="py-3.5 px-4 text-right">Nilai Akhir</th>
-                    <th className="py-3.5 px-5 text-right">Tindakan</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 text-sm">
-                  {selectedExamSubs.map((sub) => (
-                    <tr key={sub.id} className="hover:bg-slate-50">
-                      <td className="py-3.5 px-5 font-mono tabular-nums text-slate-600">
-                        {sub.studentNis}
-                      </td>
-                      <td className="py-3.5 px-4 font-medium text-slate-900">
-                        {sub.studentName}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-600">
-                        {sub.studentClass}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-mono tabular-nums text-slate-700">
-                        {sub.autoScore}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-mono tabular-nums text-slate-700">
-                        {sub.essayScoreTotal}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-mono font-bold tabular-nums text-slate-900">
-                        {sub.finalScore}
-                      </td>
-                      <td className="py-3.5 px-5 text-right">
-                        {essayQuestions.length > 0 ? (
-                          <button
-                            type="button"
-                            onClick={() => openEssayGrading(sub)}
-                            className="px-3 py-1.5 text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 rounded-md cursor-pointer"
-                          >
-                            Nilai Esai
-                          </button>
-                        ) : (
-                          <span className="text-xs text-slate-400">Otomatis PG</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <GradeAndLogReportPanel
+          title={`Nilai Per Kelas & Log Siswa · ${teacherSubject || 'Mapel Guru'}`}
+          subtitle={`Akses khusus mata pelajaran ${teacherSubject || 'Anda'}: pantau nilai per kelas, koreksi esai, unduh Excel (.xlsx), dan audit log pengerjaan.`}
+          exams={scopedExams}
+          questions={scopedQuestions}
+          submissions={scopedSubmissions}
+          activityLogs={scopedLogs}
+          selectedExamId={reportExamId}
+          onChangeExamId={setReportExamId}
+          onOpenEssayGrading={(sub, exam) => {
+            setSelectedExamId(exam.id);
+            openEssayGrading(sub);
+          }}
+        />
 
         {/* Essay Grading Modal */}
         {gradingSub && (
@@ -1261,11 +1611,15 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
           onChange={(e) => setSelectedExamId(e.target.value)}
           className="px-3.5 py-2.5 text-sm bg-white border border-slate-200 rounded-lg font-medium text-slate-900"
         >
-          {exams.map((ex) => (
-            <option key={ex.id} value={ex.id}>
-              {ex.title} ({ex.targetClass})
-            </option>
-          ))}
+          {scopedExams.length === 0 ? (
+            <option value="">Belum ada ujian mapel {teacherSubject}</option>
+          ) : (
+            scopedExams.map((ex) => (
+              <option key={ex.id} value={ex.id}>
+                {ex.title} ({ex.targetClass})
+              </option>
+            ))
+          )}
         </select>
       </div>
 

@@ -1,15 +1,19 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
   CalendarClock,
+  CreditCard,
   Download,
+  FileSpreadsheet,
+  Image as ImageIcon,
   Pencil,
   Plus,
   RotateCcw,
   Save,
   Search,
   Trash2,
+  Upload,
   UserPlus,
 } from 'lucide-react';
 import type {
@@ -17,20 +21,33 @@ import type {
   AppDatabase,
   Exam,
   ExamStatus,
-  ExamSubmission,
   SystemSettings,
   User,
   UserRole,
 } from '../types/exam';
 import { detectScheduleConflicts, PortalTab } from '../utils/examEngine';
+import {
+  downloadUserImportTemplate,
+  parseImportedUserRows,
+  readSpreadsheetRows,
+  UserImportResult,
+} from '../utils/userImport';
+import { readAndResizeImageAsDataUrl } from '../utils/imageUpload';
 import type { BackendCapabilities } from '../services/storage';
+import { ExamCardPrinter } from './ExamCardPrinter';
+import { GradeAndLogReportPanel } from './GradeAndLogReportPanel';
+
+const DEFAULT_LOGO_PATH = './src/assets/images/kartini_crest_1795078071603.jpg';
+const DEFAULT_HERO_PATH = './src/assets/images/smp_kartini_campus_v2_1795078091161.jpg';
 
 interface AdminPortalProps {
   user: User;
   activeTab: PortalTab;
   database: AppDatabase;
   capabilities: BackendCapabilities;
+  onSelectTab?: (tab: PortalTab) => void;
   onAddUser: (newUser: User) => void;
+  onBulkImportUsers: (toInsert: User[], toUpdate: User[]) => void;
   onUpdateUser: (updated: User) => void;
   onDeleteUser: (userId: string) => void;
   onSaveExam: (exam: Exam) => void;
@@ -44,7 +61,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   activeTab,
   database,
   capabilities,
+  onSelectTab,
   onAddUser,
+  onBulkImportUsers,
   onUpdateUser,
   onDeleteUser,
   onSaveExam,
@@ -58,6 +77,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   // User Management State
   const [userSearch, setUserSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState<'semua' | UserRole>('semua');
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importFileName, setImportFileName] = useState<string>('');
+  const [importRawRows, setImportRawRows] = useState<Record<string, unknown>[]>([]);
+  const [importUpdateExisting, setImportUpdateExisting] = useState(false);
+  const [importFileError, setImportFileError] = useState<string | null>(null);
+  const [importBannerMsg, setImportBannerMsg] = useState<string | null>(null);
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [formUsername, setFormUsername] = useState('');
@@ -85,10 +110,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [exStatus, setExStatus] = useState<ExamStatus>('terjadwal');
   const [exRequireToken, setExRequireToken] = useState(true);
 
+  // Report filter state
+  const [reportExamId, setReportExamId] = useState<string>('semua');
+
   // System Settings Draft
   const [draftSettings, setDraftSettings] = useState<SystemSettings>(settings);
   const [settingsSavedMsg, setSettingsSavedMsg] = useState<string | null>(null);
+  const [imageUploadError, setImageUploadError] = useState<string | null>(null);
   const [confirmReset, setConfirmReset] = useState(false);
+
+  useEffect(() => {
+    setDraftSettings(settings);
+  }, [settings]);
+
+  const handleBrandImageUpload = async (
+    field: 'logoUrl' | 'heroImageUrl',
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageUploadError(null);
+    try {
+      const processed = await readAndResizeImageAsDataUrl(
+        file,
+        field === 'logoUrl'
+          ? { maxWidth: 256, maxHeight: 256, quality: 0.9 }
+          : { maxWidth: 1280, maxHeight: 720, quality: 0.84 }
+      );
+      setDraftSettings((prev) => ({ ...prev, [field]: processed.dataUrl }));
+    } catch (err) {
+      setImageUploadError(
+        err instanceof Error ? err.message : 'Gagal memproses gambar.'
+      );
+    }
+  };
 
   const filteredUsers = useMemo(() => {
     const q = userSearch.trim().toLowerCase();
@@ -102,6 +157,60 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       return matchRole && matchQuery;
     });
   }, [users, userSearch, roleFilter]);
+
+  const importPreview: UserImportResult | null = useMemo(() => {
+    if (importRawRows.length === 0) return null;
+    return parseImportedUserRows(importRawRows, users, {
+      updateExisting: importUpdateExisting,
+    });
+  }, [importRawRows, users, importUpdateExisting]);
+
+  const handleOpenImportModal = () => {
+    setImportFileName('');
+    setImportRawRows([]);
+    setImportFileError(null);
+    setImportUpdateExisting(false);
+    setShowImportModal(true);
+  };
+
+  const handleImportFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportFileError(null);
+    setImportFileName(file.name);
+    try {
+      const rows = await readSpreadsheetRows(file);
+      if (rows.length === 0) {
+        setImportRawRows([]);
+        setImportFileError(
+          'File Excel kosong atau tidak memiliki baris data di bawah header.'
+        );
+        return;
+      }
+      setImportRawRows(rows);
+    } catch (err) {
+      setImportRawRows([]);
+      setImportFileError(
+        err instanceof Error
+          ? err.message
+          : 'Gagal membaca file Excel. Pastikan format .xlsx, .xls, atau .csv valid.'
+      );
+    }
+  };
+
+  const handleConfirmBulkImport = () => {
+    if (!importPreview) return;
+    const { toInsert, toUpdate } = importPreview;
+    if (toInsert.length === 0 && toUpdate.length === 0) return;
+    onBulkImportUsers(toInsert, toUpdate);
+    setShowImportModal(false);
+    setImportBannerMsg(
+      `Berhasil mengimpor ${toInsert.length} akun baru dan memperbarui ${toUpdate.length} akun.`
+    );
+    setTimeout(() => setImportBannerMsg(null), 5000);
+  };
 
   const conflicts = useMemo(() => detectScheduleConflicts(exams), [exams]);
   const teachers = useMemo(() => users.filter((u) => u.role === 'guru'), [users]);
@@ -291,6 +400,29 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  // TAB: Cetak Kartu Peserta Ujian (Ukuran Kartu Debit / ID Card CR80)
+  if (activeTab === 'admin-kartu') {
+    return <ExamCardPrinter users={users} exams={exams} settings={settings} />;
+  }
+
+  // TAB: Laporan Log Pengerjaan Siswa & Hasil Nilai Per Kelas
+  if (activeTab === 'admin-laporan') {
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <GradeAndLogReportPanel
+          title="Laporan Nilai Per Kelas & Log Pengerjaan Siswa"
+          subtitle="Pantau tabel hasil nilai seluruh peserta per kelas, unduh laporan Excel (.xlsx), serta audit log pengerjaan dan pelanggaran ujian."
+          exams={exams}
+          questions={questions}
+          submissions={submissions}
+          activityLogs={activityLogs}
+          selectedExamId={reportExamId}
+          onChangeExamId={setReportExamId}
+        />
+      </div>
+    );
+  }
 
   // TAB 2: Manajemen Jadwal Ujian Global
   if (activeTab === 'admin-jadwal') {
@@ -804,25 +936,201 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <option value="Genap">Genap</option>
                 </select>
               </div>
-              <div className="sm:col-span-2">
-                <label
-                  htmlFor="set-announcement"
-                  className="block text-xs font-semibold text-slate-700 mb-1"
-                >
-                  Pengumuman Halaman Login
-                </label>
-                <textarea
-                  id="set-announcement"
-                  rows={2}
-                  value={draftSettings.announcement}
-                  onChange={(e) =>
-                    setDraftSettings({
-                      ...draftSettings,
-                      announcement: e.target.value,
-                    })
-                  }
-                  className="w-full p-3 text-sm border border-slate-300 rounded-lg"
-                />
+              <div className="sm:col-span-2 pt-3 border-t border-slate-200 space-y-4">
+                <div className="flex items-center gap-2">
+                  <ImageIcon className="w-4 h-4 text-teal-700" />
+                  <h3 className="font-display text-sm font-bold text-slate-900">
+                    Tampilan Halaman Index (Logo, Gambar Utama & Pengumuman)
+                  </h3>
+                </div>
+
+                {/* Logo Sekolah */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-800">
+                      Logo Sekolah (Index & Header)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDraftSettings({
+                          ...draftSettings,
+                          logoUrl: DEFAULT_LOGO_PATH,
+                        })
+                      }
+                      className="text-xs font-medium text-teal-700 hover:text-teal-800 cursor-pointer"
+                    >
+                      Reset Logo Bawaan
+                    </button>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                    <div className="w-16 h-16 rounded-lg border border-slate-200 bg-white overflow-hidden shrink-0 flex items-center justify-center">
+                      <img
+                        src={draftSettings.logoUrl || DEFAULT_LOGO_PATH}
+                        alt="Pratinjau logo sekolah"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="flex-1 w-full space-y-2">
+                      <div>
+                        <label
+                          htmlFor="set-logo-file"
+                          className="block text-[11px] font-medium text-slate-600 mb-1"
+                        >
+                          Unggah File Logo (PNG, JPG, WebP, SVG)
+                        </label>
+                        <input
+                          id="set-logo-file"
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleBrandImageUpload('logoUrl', e)}
+                          className="block w-full text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-800 hover:file:bg-slate-100 cursor-pointer"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="set-logo-url"
+                          className="block text-[11px] font-medium text-slate-600 mb-1"
+                        >
+                          Atau Masukkan URL / Path Logo
+                        </label>
+                        <input
+                          id="set-logo-url"
+                          type="text"
+                          value={draftSettings.logoUrl ?? ''}
+                          onChange={(e) =>
+                            setDraftSettings({
+                              ...draftSettings,
+                              logoUrl: e.target.value,
+                            })
+                          }
+                          placeholder={DEFAULT_LOGO_PATH}
+                          className="w-full px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Gambar Utama / Banner Index */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-800">
+                      Gambar Utama Halaman Index (Banner)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDraftSettings({
+                          ...draftSettings,
+                          heroImageUrl: DEFAULT_HERO_PATH,
+                        })
+                      }
+                      className="text-xs font-medium text-teal-700 hover:text-teal-800 cursor-pointer"
+                    >
+                      Reset Gambar Bawaan
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="h-28 w-full rounded-lg border border-slate-200 bg-slate-900 overflow-hidden">
+                      <img
+                        src={draftSettings.heroImageUrl || DEFAULT_HERO_PATH}
+                        alt="Pratinjau gambar halaman index"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label
+                          htmlFor="set-hero-file"
+                          className="block text-[11px] font-medium text-slate-600 mb-1"
+                        >
+                          Unggah File Gambar Banner
+                        </label>
+                        <input
+                          id="set-hero-file"
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => handleBrandImageUpload('heroImageUrl', e)}
+                          className="block w-full text-xs text-slate-700 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-800 hover:file:bg-slate-100 cursor-pointer"
+                        />
+                      </div>
+                      <div>
+                        <label
+                          htmlFor="set-hero-url"
+                          className="block text-[11px] font-medium text-slate-600 mb-1"
+                        >
+                          Atau URL / Path Gambar Banner
+                        </label>
+                        <input
+                          id="set-hero-url"
+                          type="text"
+                          value={draftSettings.heroImageUrl ?? ''}
+                          onChange={(e) =>
+                            setDraftSettings({
+                              ...draftSettings,
+                              heroImageUrl: e.target.value,
+                            })
+                          }
+                          placeholder={DEFAULT_HERO_PATH}
+                          className="w-full px-3 py-1.5 text-xs font-mono bg-white border border-slate-300 rounded-lg"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {imageUploadError && (
+                  <p role="alert" className="text-xs font-medium text-red-700">
+                    {imageUploadError}
+                  </p>
+                )}
+
+                <div>
+                  <label
+                    htmlFor="set-announcement-title"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    Judul Pengumuman Halaman Index
+                  </label>
+                  <input
+                    id="set-announcement-title"
+                    type="text"
+                    value={draftSettings.announcementTitle ?? 'Pengumuman Akademik'}
+                    onChange={(e) =>
+                      setDraftSettings({
+                        ...draftSettings,
+                        announcementTitle: e.target.value,
+                      })
+                    }
+                    className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="set-announcement"
+                    className="block text-xs font-semibold text-slate-700 mb-1"
+                  >
+                    Isi Pengumuman Halaman Index
+                  </label>
+                  <textarea
+                    id="set-announcement"
+                    rows={3}
+                    value={draftSettings.announcement}
+                    onChange={(e) =>
+                      setDraftSettings({
+                        ...draftSettings,
+                        announcement: e.target.value,
+                      })
+                    }
+                    className="w-full p-3 text-sm border border-slate-300 rounded-lg"
+                  />
+                </div>
               </div>
             </div>
 
@@ -940,15 +1248,44 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openAddUserModal}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <UserPlus className="w-4 h-4" />
-          <span>Tambah Pengguna</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {onSelectTab && (
+            <button
+              type="button"
+              onClick={() => onSelectTab('admin-kartu')}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-sm font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <CreditCard className="w-4 h-4 text-teal-700" />
+              <span>Print Kartu Ujian</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleOpenImportModal}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-800 text-sm font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Upload className="w-4 h-4 text-teal-700" />
+            <span>Import Excel</span>
+          </button>
+          <button
+            type="button"
+            onClick={openAddUserModal}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-sm font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <UserPlus className="w-4 h-4" />
+            <span>Tambah Pengguna</span>
+          </button>
+        </div>
       </div>
+
+      {importBannerMsg && (
+        <div
+          role="status"
+          className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-medium text-emerald-900"
+        >
+          {importBannerMsg}
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
         <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1173,11 +1510,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   <input
                     id="usr-mapel"
                     type="text"
+                    list={formRole === 'guru' ? 'kartini-subject-suggestions' : undefined}
                     value={formMapel}
                     onChange={(e) => setFormMapel(e.target.value)}
-                    placeholder="Contoh: Bahasa Inggris"
+                    placeholder="Contoh: IPA Terpadu"
                     className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
                   />
+                  {formRole === 'guru' && (
+                    <datalist id="kartini-subject-suggestions">
+                      <option value="Matematika" />
+                      <option value="IPA Terpadu" />
+                      <option value="Bahasa Indonesia" />
+                      <option value="Bahasa Inggris" />
+                      <option value="IPS Terpadu" />
+                      <option value="PKn" />
+                      <option value="Pendidikan Agama" />
+                      <option value="Informatika" />
+                      <option value="Literasi & Numerasi" />
+                      <option value="PJOK" />
+                      <option value="Seni Budaya" />
+                    </datalist>
+                  )}
                 </div>
               )}
             </div>
@@ -1204,6 +1557,180 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Bulk Excel Import Modal */}
+      {showImportModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="import-users-title"
+          className="fixed inset-0 z-50 bg-slate-950/50 flex items-center justify-center p-4"
+        >
+          <div className="bg-white border border-slate-200 rounded-xl max-w-3xl w-full p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="import-users-title"
+                  className="font-display text-lg font-bold text-slate-900"
+                >
+                  Import Data Pengguna dari Excel
+                </h2>
+                <p className="text-xs text-slate-600 mt-1">
+                  Unduh templat Excel resmi, lengkapi data Siswa/Guru/Admin, lalu unggah kembali untuk impor massal.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={downloadUserImportTemplate}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-teal-700 hover:bg-teal-800 text-white text-xs font-semibold rounded-lg whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Template Excel</span>
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-800">
+                <FileSpreadsheet className="w-4 h-4 text-teal-700 shrink-0" />
+                <span>Kolom Template: username, name, role (siswa/guru/admin), kelas, mapel, password, active</span>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="import-excel-file"
+                  className="block text-xs font-semibold text-slate-700 mb-1.5"
+                >
+                  Pilih File Excel (.xlsx, .xls, .csv)
+                </label>
+                <input
+                  id="import-excel-file"
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  onChange={handleImportFileChange}
+                  className="block w-full text-xs text-slate-700 file:mr-3 file:py-2 file:px-3.5 file:rounded-lg file:border file:border-slate-300 file:text-xs file:font-semibold file:bg-white file:text-slate-800 hover:file:bg-slate-100 cursor-pointer"
+                />
+                {importFileName && (
+                  <p className="mt-1.5 text-xs text-slate-500">
+                    File dipilih: <span className="font-mono text-slate-800">{importFileName}</span>
+                  </p>
+                )}
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={importUpdateExisting}
+                  onChange={(e) => setImportUpdateExisting(e.target.checked)}
+                  className="accent-teal-700"
+                />
+                <span>Perbarui data akun apabila username (NIS/NIP) sudah terdaftar</span>
+              </label>
+            </div>
+
+            {importFileError && (
+              <div
+                role="alert"
+                className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs font-medium text-red-800"
+              >
+                {importFileError}
+              </div>
+            )}
+
+            {importPreview && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-4 text-xs">
+                  <span className="font-semibold text-emerald-700">
+                    Akun baru: <span className="font-mono tabular-nums">{importPreview.toInsert.length}</span>
+                  </span>
+                  <span className="font-semibold text-teal-700">
+                    Pembaruan: <span className="font-mono tabular-nums">{importPreview.toUpdate.length}</span>
+                  </span>
+                  <span className="font-semibold text-amber-700">
+                    Duplikat dilewati: <span className="font-mono tabular-nums">{importPreview.duplicateCount}</span>
+                  </span>
+                  <span className="font-semibold text-red-700">
+                    Baris error: <span className="font-mono tabular-nums">{importPreview.errorCount}</span>
+                  </span>
+                </div>
+
+                <div className="border border-slate-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 font-semibold text-slate-600">
+                        <th className="py-2.5 px-3">Baris</th>
+                        <th className="py-2.5 px-3">NIS/NIP</th>
+                        <th className="py-2.5 px-3">Nama</th>
+                        <th className="py-2.5 px-3">Peran</th>
+                        <th className="py-2.5 px-3">Kelas / Mapel</th>
+                        <th className="py-2.5 px-3">Validasi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {importPreview.previewRows.map((row) => (
+                        <tr key={row.rowNumber} className="hover:bg-slate-50">
+                          <td className="py-2 px-3 font-mono tabular-nums text-slate-500">
+                            {row.rowNumber}
+                          </td>
+                          <td className="py-2 px-3 font-mono tabular-nums text-slate-800">
+                            {row.username}
+                          </td>
+                          <td className="py-2 px-3 font-medium text-slate-900">
+                            {row.name}
+                          </td>
+                          <td className="py-2 px-3 capitalize text-slate-700">
+                            {row.role}
+                          </td>
+                          <td className="py-2 px-3 text-slate-600">
+                            {row.role === 'siswa' ? `Kelas ${row.kelas}` : row.mapel}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span
+                              className={
+                                row.status === 'valid' || row.status === 'update'
+                                  ? 'text-emerald-700 font-medium'
+                                  : row.status === 'duplicate'
+                                  ? 'text-amber-700 font-medium'
+                                  : 'text-red-700 font-medium'
+                              }
+                            >
+                              {row.message}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-200">
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
+              >
+                Tutup
+              </button>
+              <button
+                type="button"
+                disabled={
+                  !importPreview ||
+                  importPreview.toInsert.length + importPreview.toUpdate.length === 0
+                }
+                onClick={handleConfirmBulkImport}
+                className="px-4 py-2 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg cursor-pointer"
+              >
+                Impor{' '}
+                {importPreview
+                  ? importPreview.toInsert.length + importPreview.toUpdate.length
+                  : 0}{' '}
+                Pengguna
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
